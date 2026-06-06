@@ -1,0 +1,92 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model Lead {
+  id             String    @id @default(cuid())
+  businessName   String
+  website        String?
+  email          String?
+  phone          String?
+  whatsapp       String?
+  industry       String?
+  location       String?
+  notes          String?
+  status         String    @default("new")
+  score          Int       @default(0)
+
+  // Social media profiles
+  instagram      String?
+  facebook       String?
+  linkedin       String?
+  youtube        String?
+  twitter        String?
+  gmb            String?   // Google My Business URL
+
+  // AI Research results
+  websiteScore   Int?      // 0-100
+  socialScore    Int?      // 0-100
+  gaps           String?   // JSON array of gaps found
+  weaknesses     String?   // Claude's weakness analysis
+  outreachAngle  String?   // Recommended cold email angle
+  lastResearched DateTime?
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  outreachLogs OutreachLog[]
+  followUps    FollowUp[]
+}
+
+model OutreachLog {
+  id        String   @id @default(cuid())
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id])
+  subject   String
+  body      String
+  channel   String   @default("email") // email, linkedin, whatsapp
+  sentAt    DateTime @default(now())
+  opened    Boolean  @default(false)
+  replied   Boolean  @default(false)
+}
+
+model FollowUp {
+  id          String   @id @default(cuid())
+  leadId      String
+  lead        Lead     @relation(fields: [leadId], references: [id])
+  message     String
+  scheduledAt DateTime
+  sentAt      DateTime?
+  status      String   @default("pending") // pending, sent, skipped
+  createdAt   DateTime @default(now())
+}
+
+model Content {
+  id          String   @id @default(cuid())
+  type        String   // social_post, blog, ad_copy, email_template, proposal
+  platform    String?  // instagram, facebook, linkedin, google
+  title       String?
+  body        String
+  tags        String?
+  industry    String?
+  createdAt   DateTime @default(now())
+}
+
+model Campaign {
+  id          String   @id @default(cuid())
+  name        String
+  status      String   @default("draft") // draft, active, paused, completed
+  targetNiche String?
+  targetCity  String?
+  totalLeads  Int      @default(0)
+  contacted   Int      @default(0)
+  replied     Int      @default(0)
+  converted   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
