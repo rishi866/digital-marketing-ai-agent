@@ -32,6 +32,7 @@ model Lead {
   rating         Float?
   reviewCount    Int?
   mapUrl         String?
+  gmbRank        Int?
 
   websiteScore   Int?
   socialScore    Int?

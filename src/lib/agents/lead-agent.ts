@@ -17,6 +17,7 @@ export interface LeadInput {
   reviewCount?: number;
   instagram?: string;
   facebook?: string;
+  gmbRank?: number;
 }
 
 // ── Apify Google Maps real data ──────────────────────────────────────────────
@@ -34,12 +35,14 @@ interface ApifyPlace {
   categories?: string[];
   totalScore?: number;
   reviewsCount?: number;
-  url?: string;                    // Google Maps URL
+  url?: string;
   permanentlyClosed?: boolean;
   temporarilyClosed?: boolean;
   instagram?: string;
   facebook?: string;
   description?: string;
+  rank?: number;
+  positionInSearch?: number;
 }
 
 export async function findRealLeadsApify(
@@ -100,6 +103,7 @@ export async function findRealLeadsApify(
       reviewCount: p.reviewsCount,
       instagram: p.instagram,
       facebook: p.facebook,
+      gmbRank: p.rank ?? p.positionInSearch,
     }));
 }
 
@@ -144,6 +148,7 @@ export async function saveLead(input: LeadInput) {
       reviewCount: input.reviewCount,
       instagram: input.instagram,
       facebook: input.facebook,
+      gmbRank: input.gmbRank,
       score,
     },
   });

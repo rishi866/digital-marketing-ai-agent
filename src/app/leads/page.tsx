@@ -23,6 +23,7 @@ interface Lead {
   youtube?: string;
   twitter?: string;
   gmb?: string;
+  gmbRank?: number;
   websiteScore?: number;
   socialScore?: number;
   gaps?: string;
@@ -164,10 +165,24 @@ function LeadProfile({ lead, onClose, onUpdate }: { lead: Lead; onClose: () => v
           )}
 
           {/* Google Maps / Rating */}
-          {(lead.rating || lead.address || lead.mapUrl) && (
+          {(lead.rating || lead.address || lead.mapUrl || lead.gmbRank) && (
             <div className="card border-yellow-100 bg-yellow-50">
-              <h3 className="font-semibold text-slate-800 text-sm mb-3">📍 Google Maps Data</h3>
-              <div className="space-y-1.5 text-sm">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-slate-800 text-sm">📍 Google Maps Data</h3>
+                <span className="text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded-full border border-green-200">✓ Real Google Maps Data</span>
+              </div>
+              <div className="space-y-2 text-sm">
+                {lead.gmbRank && (
+                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg font-semibold ${lead.gmbRank <= 3 ? "bg-green-100 text-green-800" : lead.gmbRank <= 7 ? "bg-yellow-100 text-yellow-800" : "bg-red-100 text-red-700"}`}>
+                    <span className="text-lg">🏆</span>
+                    <div>
+                      <span>Google Maps Rank: <strong>#{lead.gmbRank}</strong></span>
+                      <p className="text-xs font-normal mt-0.5">
+                        {lead.gmbRank <= 3 ? "Top 3 — already visible" : lead.gmbRank <= 7 ? "Page 1 — can improve to top 3" : "Low ranking — big GMB opportunity to pitch!"}
+                      </p>
+                    </div>
+                  </div>
+                )}
                 {lead.address && <div className="text-slate-700">📌 {lead.address}</div>}
                 {lead.rating && (
                   <div className="flex items-center gap-2">
@@ -181,7 +196,9 @@ function LeadProfile({ lead, onClose, onUpdate }: { lead: Lead; onClose: () => v
                 )}
                 {lead.mapUrl && (
                   <a href={lead.mapUrl} target="_blank" rel="noopener noreferrer"
-                    className="text-blue-600 hover:underline text-xs">View on Google Maps →</a>
+                    className="inline-flex items-center gap-1 text-blue-600 hover:underline text-xs font-medium">
+                    Verify on Google Maps → (click to confirm this is real)
+                  </a>
                 )}
               </div>
             </div>
