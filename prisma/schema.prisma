@@ -28,6 +28,12 @@ model Lead {
   twitter        String?
   gmb            String?   // Google My Business URL
 
+  // From Google Maps (Apify)
+  address        String?
+  rating         Float?
+  reviewCount    Int?
+  mapUrl         String?   // Google Maps link
+
   // AI Research results
   websiteScore   Int?      // 0-100
   socialScore    Int?      // 0-100

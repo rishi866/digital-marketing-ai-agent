@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { saveLead, generateLeadsFromNiche } from "@/lib/agents/lead-agent";
+import { saveLead, generateLeadsFromNiche, findRealLeadsApify } from "@/lib/agents/lead-agent";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -28,11 +28,22 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
 
   if (body.action === "generate") {
-    const leads = await generateLeadsFromNiche(
-      body.niche ?? "restaurant",
-      body.location ?? "Mumbai",
-      body.count ?? 10
-    );
+    // Try real Apify data first, fallback to AI-generated
+    let leads;
+    try {
+      leads = await findRealLeadsApify(
+        body.niche ?? "restaurant",
+        body.location ?? "Mumbai",
+        body.count ?? 10
+      );
+    } catch (err) {
+      console.error("Apify failed, falling back to AI generation:", err);
+      leads = await generateLeadsFromNiche(
+        body.niche ?? "restaurant",
+        body.location ?? "Mumbai",
+        body.count ?? 10
+      );
+    }
     const saved = await Promise.all(leads.map(saveLead));
     return NextResponse.json({ saved, count: saved.length });
   }

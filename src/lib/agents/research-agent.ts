@@ -1,185 +1,172 @@
 import { askClaude } from "../anthropic";
 import { prisma } from "../db";
 
-interface ScrapedData {
-  emails: string[];
-  phones: string[];
-  whatsapp: string | null;
-  instagram: string | null;
-  facebook: string | null;
-  linkedin: string | null;
-  youtube: string | null;
-  twitter: string | null;
-  gmb: string | null;
-  title: string;
-  description: string;
-  hasContactPage: boolean;
-  raw: string;
+// ── Firecrawl website scraper ─────────────────────────────────────────────────
+
+interface FirecrawlResult {
+  markdown: string;
+  links: string[];
+  metadata: {
+    title?: string;
+    description?: string;
+    statusCode?: number;
+    error?: string;
+  };
 }
 
-const HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  "Accept-Language": "en-US,en;q=0.5",
-};
+async function firecrawlScrape(url: string): Promise<FirecrawlResult | null> {
+  const key = process.env.FIRECRAWL_API_KEY;
+  if (!key) return null;
 
-async function fetchHTML(url: string): Promise<string> {
   try {
-    const res = await fetch(url, {
-      headers: HEADERS,
-      signal: AbortSignal.timeout(12000),
+    let cleanUrl = url.trim();
+    if (!cleanUrl.startsWith("http")) cleanUrl = "https://" + cleanUrl;
+
+    const res = await fetch("https://api.firecrawl.dev/v1/scrape", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: cleanUrl,
+        formats: ["markdown", "links"],
+        onlyMainContent: false,
+        timeout: 20000,
+        waitFor: 2000,
+      }),
+      signal: AbortSignal.timeout(30_000),
     });
-    if (!res.ok) return "";
-    return await res.text();
+
+    if (!res.ok) return null;
+    const json = await res.json();
+    return (json.data ?? json) as FirecrawlResult;
   } catch {
-    return "";
+    return null;
   }
 }
 
-function extractEmails(html: string): string[] {
-  const raw = html.replace(/mailto:/gi, " ");
-  const found = raw.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g) ?? [];
-  // filter out image/css/js files
-  return [...new Set(found.filter((e) =>
-    !e.match(/\.(png|jpg|jpeg|gif|svg|css|js|woff|ttf)$/i) &&
-    !e.includes("sentry") && !e.includes("example")
-  ))].slice(0, 3);
+// Also scrape contact page for more data
+async function firecrawlContact(baseUrl: string): Promise<FirecrawlResult | null> {
+  const base = baseUrl.replace(/\/$/, "");
+  // Try /contact first, then /contact-us
+  let result = await firecrawlScrape(`${base}/contact`);
+  if (!result?.markdown) result = await firecrawlScrape(`${base}/contact-us`);
+  return result;
 }
 
-function extractPhones(html: string): string[] {
-  // Indian & international numbers
+// ── Extract data from Firecrawl markdown ─────────────────────────────────────
+
+function extractEmails(text: string): string[] {
+  const found = text.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g) ?? [];
+  return [...new Set(
+    found.filter((e) => !e.match(/\.(png|jpg|gif|css|js)$/i) && !e.includes("example") && !e.includes("sentry"))
+  )].slice(0, 3);
+}
+
+function extractPhones(text: string): string[] {
   const patterns = [
     /(\+91[\s\-]?)?[6-9]\d{9}/g,
     /\+1[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{4}/g,
-    /\(\d{3,4}\)[\s\-]?\d{6,8}/g,
   ];
   const found: string[] = [];
   for (const p of patterns) {
-    const matches = html.match(p) ?? [];
-    found.push(...matches.map((m) => m.replace(/\s/g, "")));
+    found.push(...(text.match(p) ?? []).map((m) => m.replace(/\s/g, "")));
   }
   return [...new Set(found)].slice(0, 3);
 }
 
-function extractSocial(html: string) {
-  const get = (pattern: RegExp) => {
-    const m = html.match(pattern);
-    return m ? m[0].replace(/['"]/g, "") : null;
-  };
+function extractSocialFromLinks(links: string[]) {
+  const find = (domain: string) =>
+    links.find((l) => l.includes(domain) && !l.includes("share") && !l.includes("intent")) ?? null;
+
+  const whatsapp = links.find((l) => l.includes("wa.me/") || l.includes("whatsapp.com/")) ?? null;
 
   return {
-    instagram: get(/https?:\/\/(www\.)?instagram\.com\/[a-zA-Z0-9._]{2,}/),
-    facebook: get(/https?:\/\/(www\.)?facebook\.com\/[a-zA-Z0-9._%\-]{2,}/),
-    linkedin: get(/https?:\/\/(www\.)?linkedin\.com\/(company|in|school)\/[a-zA-Z0-9\-_%]{2,}/),
-    youtube: get(/https?:\/\/(www\.)?youtube\.com\/(channel\/|c\/|user\/|@)[a-zA-Z0-9_\-]{2,}/),
-    twitter: get(/https?:\/\/(www\.)?(twitter|x)\.com\/[a-zA-Z0-9_]{2,}/),
-    gmb: get(/https?:\/\/maps\.google\.com\/[^\s"']*/),
-    whatsapp: (() => {
-      const m = html.match(/wa\.me\/(\d{10,13})/);
-      return m ? `https://wa.me/${m[1]}` : null;
-    })(),
+    instagram: find("instagram.com/"),
+    facebook: find("facebook.com/"),
+    linkedin: find("linkedin.com/"),
+    youtube: find("youtube.com/"),
+    twitter: links.find((l) => l.includes("twitter.com/") || l.includes("x.com/")) ?? null,
+    whatsapp,
+    gmb: links.find((l) => l.includes("maps.google.com") || l.includes("goo.gl/maps") || l.includes("g.page")) ?? null,
   };
 }
 
-function extractMeta(html: string) {
-  const title = html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim() ?? "";
-  const description = html.match(/name="description"\s+content="([^"]+)"/i)?.[1]?.trim() ?? "";
-  const hasContactPage = /contact|about|reach|inquiry/i.test(html);
-  return { title, description, hasContactPage };
-}
+// ── Check if a social profile actually exists ─────────────────────────────────
 
-async function scrapeWebsite(rawUrl: string): Promise<ScrapedData> {
-  let url = rawUrl.trim();
-  if (!url.startsWith("http")) url = "https://" + url;
-
-  let html = await fetchHTML(url);
-
-  // Try www if direct fails
-  if (!html && !url.includes("www.")) {
-    url = url.replace("https://", "https://www.");
-    html = await fetchHTML(url);
-  }
-
-  // Also check /contact page for emails
-  let contactHtml = "";
-  if (html) {
-    const base = url.replace(/\/$/, "");
-    contactHtml = await fetchHTML(`${base}/contact`);
-    if (!contactHtml) contactHtml = await fetchHTML(`${base}/contact-us`);
-  }
-
-  const combined = html + " " + contactHtml;
-  const social = extractSocial(combined);
-  const meta = extractMeta(html);
-
-  return {
-    emails: extractEmails(combined),
-    phones: extractPhones(combined),
-    whatsapp: social.whatsapp,
-    instagram: social.instagram,
-    facebook: social.facebook,
-    linkedin: social.linkedin,
-    youtube: social.youtube,
-    twitter: social.twitter,
-    gmb: social.gmb,
-    hasContactPage: meta.hasContactPage,
-    title: meta.title,
-    description: meta.description,
-    raw: combined.slice(0, 3000),
-  };
-}
-
-async function checkSocialPresence(url: string | null): Promise<boolean> {
+async function checkUrl(url: string | null): Promise<boolean> {
   if (!url) return false;
   try {
-    const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(8000) });
-    return res.ok && res.status !== 404;
+    const res = await fetch(url, {
+      method: "HEAD",
+      headers: { "User-Agent": "Mozilla/5.0" },
+      signal: AbortSignal.timeout(6000),
+    });
+    return res.ok;
   } catch {
     return false;
   }
 }
 
-async function analyzeWithClaude(params: {
+// ── Claude gap analysis ───────────────────────────────────────────────────────
+
+async function analyzeGaps(params: {
   businessName: string;
   industry?: string;
   location?: string;
-  scraped: ScrapedData;
-  hasWebsite: boolean;
-  socialPresence: Record<string, boolean>;
-}): Promise<{ gaps: string[]; weaknesses: string; outreachAngle: string; websiteScore: number; socialScore: number }> {
-  const { businessName, industry, location, scraped, hasWebsite, socialPresence } = params;
-
-  const presentPlatforms = Object.entries(socialPresence).filter(([, v]) => v).map(([k]) => k);
-  const missingPlatforms = Object.entries(socialPresence).filter(([, v]) => !v).map(([k]) => k);
+  address?: string;
+  rating?: number;
+  reviewCount?: number;
+  website?: string;
+  websiteTitle?: string;
+  websiteDesc?: string;
+  email?: string;
+  phone?: string;
+  instagram?: string;
+  facebook?: string;
+  linkedin?: string;
+  youtube?: string;
+  twitter?: string;
+  whatsapp?: string;
+  gmb?: string;
+}): Promise<{
+  gaps: string[];
+  weaknesses: string;
+  outreachAngle: string;
+  websiteScore: number;
+  socialScore: number;
+}> {
+  const p = params;
 
   const prompt = `
-You are a digital marketing analyst. Research this business and identify their online marketing weaknesses.
+You are a digital marketing analyst auditing a business for a full-service agency.
 
-Business: ${businessName}
-Industry: ${industry ?? "unknown"}
-Location: ${location ?? "unknown"}
+BUSINESS INFO:
+- Name: ${p.businessName}
+- Industry: ${p.industry ?? "unknown"}
+- Location: ${p.location ?? "India"} ${p.address ? `(${p.address})` : ""}
+- Google Rating: ${p.rating ? `${p.rating}/5 (${p.reviewCount ?? 0} reviews)` : "Not found"}
 
-ONLINE PRESENCE AUDIT:
-- Website: ${hasWebsite ? `YES (Title: "${scraped.title}", Desc: "${scraped.description}")` : "NO WEBSITE FOUND"}
-- Email found: ${scraped.emails.length > 0 ? scraped.emails.join(", ") : "None"}
-- Phone found: ${scraped.phones.length > 0 ? "Yes" : "None"}
-- Instagram: ${socialPresence.instagram ? "ACTIVE" : "MISSING"}
-- Facebook: ${socialPresence.facebook ? "ACTIVE" : "MISSING"}
-- LinkedIn: ${socialPresence.linkedin ? "ACTIVE" : "MISSING"}
-- YouTube: ${socialPresence.youtube ? "ACTIVE" : "MISSING"}
-- WhatsApp Business: ${scraped.whatsapp ? "YES" : "NO"}
-- Google Maps/GMB: ${scraped.gmb ? "YES" : "NO"}
+DIGITAL PRESENCE AUDIT:
+- Website: ${p.website ? `YES — Title: "${p.websiteTitle ?? ""}", Desc: "${p.websiteDesc ?? ""}"` : "❌ NO WEBSITE"}
+- Email: ${p.email ? `✅ ${p.email}` : "❌ Not found"}
+- Phone: ${p.phone ? `✅ ${p.phone}` : "❌ Not found"}
+- Instagram: ${p.instagram ? `✅ ${p.instagram}` : "❌ Missing"}
+- Facebook: ${p.facebook ? `✅ ${p.facebook}` : "❌ Missing"}
+- LinkedIn: ${p.linkedin ? `✅ ${p.linkedin}` : "❌ Missing"}
+- YouTube: ${p.youtube ? `✅ ${p.youtube}` : "❌ Missing"}
+- WhatsApp Business: ${p.whatsapp ? `✅ ${p.whatsapp}` : "❌ Missing"}
+- Google Maps/GMB: ${p.gmb ? `✅ Listed` : "❌ Missing or unclaimed"}
+- Twitter/X: ${p.twitter ? `✅` : "❌ Missing"}
 
-Active on: ${presentPlatforms.length > 0 ? presentPlatforms.join(", ") : "Nothing"}
-Missing: ${missingPlatforms.join(", ")}
-
-Provide a JSON response with exactly these keys:
+Provide a sharp, specific analysis in JSON:
 {
-  "gaps": ["list of specific missing/weak things (max 8, each under 15 words)"],
-  "weaknesses": "2-3 paragraph honest analysis of their digital marketing weaknesses. Be specific to their industry. Mention what competitors likely have that they don't.",
-  "outreachAngle": "1 paragraph: the BEST cold email angle to use with this specific business. What pain point to hit first, what to offer, what result to promise.",
-  "websiteScore": <0-100 score of website quality>,
-  "socialScore": <0-100 score of social media presence>
+  "gaps": ["up to 8 specific gaps, each under 12 words, very specific to this business"],
+  "weaknesses": "3 short paragraphs. Be specific: mention their exact missing platforms, low review count if applicable, competitor advantages. Write as if advising your sales team before a call.",
+  "outreachAngle": "1 precise paragraph: what EXACT pain point to open with, what service to offer first, and what result to promise. Make it feel like you researched them.",
+  "websiteScore": <integer 0-100, 0 if no website>,
+  "socialScore": <integer 0-100 based on how many platforms are active>
 }
 
 Only respond with valid JSON.`;
@@ -189,74 +176,112 @@ Only respond with valid JSON.`;
     const cleaned = result.replace(/```json|```/g, "").trim();
     return JSON.parse(cleaned);
   } catch {
+    const presentCount = [p.instagram, p.facebook, p.linkedin, p.youtube, p.twitter, p.whatsapp, p.gmb].filter(Boolean).length;
     return {
-      gaps: missingPlatforms.map((p) => `No ${p} presence`),
-      weaknesses: "Unable to analyze automatically. Please review their online presence manually.",
-      outreachAngle: `Focus on their missing ${missingPlatforms[0] ?? "social media"} presence.`,
-      websiteScore: hasWebsite ? 40 : 0,
-      socialScore: Math.round((presentPlatforms.length / 6) * 100),
+      gaps: ["Analysis failed — run again"],
+      weaknesses: "Could not generate analysis.",
+      outreachAngle: "Focus on their missing social media presence.",
+      websiteScore: p.website ? 40 : 0,
+      socialScore: Math.round((presentCount / 7) * 100),
     };
   }
 }
 
-export async function researchLead(leadId: string): Promise<{
-  success: boolean;
-  data?: Record<string, unknown>;
-  error?: string;
-}> {
+// ── Main research function ────────────────────────────────────────────────────
+
+export async function researchLead(leadId: string): Promise<{ success: boolean; data?: object; error?: string }> {
   const lead = await prisma.lead.findUnique({ where: { id: leadId } });
   if (!lead) return { success: false, error: "Lead not found" };
 
-  let scraped: ScrapedData = {
-    emails: [], phones: [], whatsapp: null, instagram: null,
-    facebook: null, linkedin: null, youtube: null, twitter: null,
-    gmb: null, hasContactPage: false, title: "", description: "", raw: "",
-  };
+  let email = lead.email ?? undefined;
+  let phone = lead.phone ?? undefined;
+  let instagram = lead.instagram ?? undefined;
+  let facebook = lead.facebook ?? undefined;
+  let linkedin = lead.linkedin ?? undefined;
+  let youtube = lead.youtube ?? undefined;
+  let twitter = lead.twitter ?? undefined;
+  let whatsapp = lead.whatsapp ?? undefined;
+  let gmb = lead.gmb ?? lead.mapUrl ?? undefined;
+  let websiteTitle = "";
+  let websiteDesc = "";
 
-  const hasWebsite = !!lead.website;
-
+  // ── Scrape website with Firecrawl ─────────────────────────────────────────
   if (lead.website) {
-    scraped = await scrapeWebsite(lead.website);
+    const [mainPage, contactPage] = await Promise.all([
+      firecrawlScrape(lead.website),
+      firecrawlContact(lead.website),
+    ]);
+
+    const combinedMarkdown = [mainPage?.markdown ?? "", contactPage?.markdown ?? ""].join("\n");
+    const allLinks = [...(mainPage?.links ?? []), ...(contactPage?.links ?? [])];
+
+    websiteTitle = mainPage?.metadata?.title ?? "";
+    websiteDesc = mainPage?.metadata?.description ?? "";
+
+    // Extract contact info from scraped text
+    const foundEmails = extractEmails(combinedMarkdown);
+    const foundPhones = extractPhones(combinedMarkdown);
+    const foundSocial = extractSocialFromLinks(allLinks);
+
+    email = email ?? foundEmails[0];
+    phone = phone ?? foundPhones[0];
+    instagram = instagram ?? foundSocial.instagram ?? undefined;
+    facebook = facebook ?? foundSocial.facebook ?? undefined;
+    linkedin = linkedin ?? foundSocial.linkedin ?? undefined;
+    youtube = youtube ?? foundSocial.youtube ?? undefined;
+    twitter = twitter ?? foundSocial.twitter ?? undefined;
+    whatsapp = whatsapp ?? foundSocial.whatsapp ?? undefined;
+    gmb = gmb ?? foundSocial.gmb ?? undefined;
   }
 
-  // Check social presence in parallel
+  // ── Verify social profiles exist ─────────────────────────────────────────
   const [igOk, fbOk, liOk, ytOk] = await Promise.all([
-    checkSocialPresence(scraped.instagram),
-    checkSocialPresence(scraped.facebook),
-    checkSocialPresence(scraped.linkedin),
-    checkSocialPresence(scraped.youtube),
+    checkUrl(instagram ?? null),
+    checkUrl(facebook ?? null),
+    checkUrl(linkedin ?? null),
+    checkUrl(youtube ?? null),
   ]);
 
-  const socialPresence = {
-    instagram: igOk,
-    facebook: fbOk,
-    linkedin: liOk,
-    youtube: ytOk,
-    whatsapp: !!scraped.whatsapp,
-    gmb: !!scraped.gmb,
-  };
+  // Clear profiles that returned 404
+  if (!igOk) instagram = undefined;
+  if (!fbOk) facebook = undefined;
+  if (!liOk) linkedin = undefined;
+  if (!ytOk) youtube = undefined;
 
-  const analysis = await analyzeWithClaude({
+  // ── Claude analysis ───────────────────────────────────────────────────────
+  const analysis = await analyzeGaps({
     businessName: lead.businessName,
     industry: lead.industry ?? undefined,
     location: lead.location ?? undefined,
-    scraped,
-    hasWebsite,
-    socialPresence,
+    address: lead.address ?? undefined,
+    rating: lead.rating ?? undefined,
+    reviewCount: lead.reviewCount ?? undefined,
+    website: lead.website ?? undefined,
+    websiteTitle,
+    websiteDesc,
+    email,
+    phone,
+    instagram,
+    facebook,
+    linkedin,
+    youtube,
+    twitter,
+    whatsapp,
+    gmb,
   });
 
   const updated = await prisma.lead.update({
     where: { id: leadId },
     data: {
-      email: scraped.emails[0] ?? lead.email ?? null,
-      phone: scraped.phones[0] ?? lead.phone ?? null,
-      whatsapp: scraped.whatsapp ?? lead.whatsapp ?? null,
-      instagram: scraped.instagram ?? lead.instagram ?? null,
-      facebook: scraped.facebook ?? lead.facebook ?? null,
-      linkedin: scraped.linkedin ?? lead.linkedin ?? null,
-      youtube: scraped.youtube ?? lead.youtube ?? null,
-      twitter: scraped.twitter ?? lead.twitter ?? null,
-      gmb: scraped.gmb ?? lead.gmb ?? null,
+      email: email ?? null,
+      phone: phone ?? null,
+      whatsapp: whatsapp ?? null,
+      instagram: instagram ?? null,
+      facebook: facebook ?? null,
+      linkedin: linkedin ?? null,
+      youtube: youtube ?? null,
+      twitter: twitter ?? null,
+      gmb: gmb ?? null,
       websiteScore: analysis.websiteScore,
       socialScore: analysis.socialScore,
       gaps: JSON.stringify(analysis.gaps),
@@ -266,41 +291,5 @@ export async function researchLead(leadId: string): Promise<{
     },
   });
 
-  return { success: true, data: updated as unknown as Record<string, unknown> };
-}
-
-export async function researchLeadByName(params: {
-  businessName: string;
-  location?: string;
-  industry?: string;
-}): Promise<{ gaps: string[]; weaknesses: string; outreachAngle: string }> {
-  // No website — use Claude to analyze based on industry + location alone
-  const prompt = `
-You are a digital marketing analyst helping identify potential clients.
-
-Business: ${params.businessName}
-Industry: ${params.industry ?? "local business"}
-Location: ${params.location ?? "India"}
-
-Based on typical businesses in this industry and location, analyze what digital marketing gaps they LIKELY have.
-Note: We don't have their actual website/social data, so base this on industry patterns.
-
-Respond with JSON:
-{
-  "gaps": ["list of 5-7 likely gaps for this type of business"],
-  "weaknesses": "2 paragraphs on common digital marketing weaknesses for ${params.industry ?? "this industry"} businesses in India",
-  "outreachAngle": "Best cold email angle for this type of business"
-}`;
-
-  const result = await askClaude(prompt);
-  try {
-    const cleaned = result.replace(/```json|```/g, "").trim();
-    return JSON.parse(cleaned);
-  } catch {
-    return {
-      gaps: ["No website", "No Instagram", "No Google My Business", "No email marketing"],
-      weaknesses: "Analysis unavailable.",
-      outreachAngle: "Focus on their online visibility gap.",
-    };
-  }
+  return { success: true, data: updated };
 }

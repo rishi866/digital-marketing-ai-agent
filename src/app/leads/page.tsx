@@ -10,6 +10,10 @@ interface Lead {
   whatsapp?: string;
   industry?: string;
   location?: string;
+  address?: string;
+  rating?: number;
+  reviewCount?: number;
+  mapUrl?: string;
   notes?: string;
   status: string;
   score: number;
@@ -156,6 +160,30 @@ function LeadProfile({ lead, onClose, onUpdate }: { lead: Lead; onClose: () => v
               <h3 className="font-semibold text-slate-800 text-sm">Online Presence Score</h3>
               <ScoreBar score={lead.websiteScore ?? undefined} label="Website" />
               <ScoreBar score={lead.socialScore ?? undefined} label="Social Media" />
+            </div>
+          )}
+
+          {/* Google Maps / Rating */}
+          {(lead.rating || lead.address || lead.mapUrl) && (
+            <div className="card border-yellow-100 bg-yellow-50">
+              <h3 className="font-semibold text-slate-800 text-sm mb-3">📍 Google Maps Data</h3>
+              <div className="space-y-1.5 text-sm">
+                {lead.address && <div className="text-slate-700">📌 {lead.address}</div>}
+                {lead.rating && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-yellow-500">{"★".repeat(Math.round(lead.rating))}{"☆".repeat(5 - Math.round(lead.rating))}</span>
+                    <span className="text-slate-700 font-medium">{lead.rating}/5</span>
+                    {lead.reviewCount && <span className="text-slate-500">({lead.reviewCount} reviews)</span>}
+                    {lead.reviewCount && lead.reviewCount < 30 && (
+                      <span className="text-red-500 text-xs font-medium">Low reviews — opportunity!</span>
+                    )}
+                  </div>
+                )}
+                {lead.mapUrl && (
+                  <a href={lead.mapUrl} target="_blank" rel="noopener noreferrer"
+                    className="text-blue-600 hover:underline text-xs">View on Google Maps →</a>
+                )}
+              </div>
             </div>
           )}
 
@@ -396,7 +424,13 @@ export default function LeadsPage() {
 
       {/* AI Generator */}
       <div className="card mb-6">
-        <h3 className="font-semibold text-slate-800 mb-4">AI Lead Generator</h3>
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <h3 className="font-semibold text-slate-800">Real Business Finder</h3>
+            <p className="text-xs text-slate-400 mt-0.5">Pulls actual businesses from Google Maps via Apify — real phone, website, rating, address</p>
+          </div>
+          <span className="badge bg-green-100 text-green-700">Live Google Maps Data</span>
+        </div>
         <div className="grid grid-cols-3 gap-4 mb-4">
           <div>
             <label className="label">Target Niche</label>
@@ -416,7 +450,7 @@ export default function LeadsPage() {
           </div>
         </div>
         <button onClick={generateLeads} disabled={generating} className="btn-primary">
-          {generating ? "Generating leads with AI..." : "Generate Leads with AI"}
+          {generating ? "Fetching from Google Maps... (30-90 sec)" : "Find Real Businesses"}
         </button>
       </div>
 
@@ -501,6 +535,9 @@ export default function LeadsPage() {
                     <td className="px-4 py-3 text-slate-600 text-xs">
                       <div>{lead.industry ?? "—"}</div>
                       <div className="text-slate-400">{lead.location ?? "—"}</div>
+                      {lead.rating && (
+                        <div className="text-yellow-500 text-xs">★ {lead.rating} ({lead.reviewCount ?? 0})</div>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-xs">
                       <div className={lead.email ? "text-green-600" : "text-slate-300"}>{lead.email ? "✓ Email" : "✗ Email"}</div>

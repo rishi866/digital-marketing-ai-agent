@@ -6,37 +6,146 @@ export interface LeadInput {
   website?: string;
   email?: string;
   phone?: string;
+  whatsapp?: string;
   industry?: string;
   location?: string;
+  address?: string;
   notes?: string;
+  gmb?: string;
+  mapUrl?: string;
+  rating?: number;
+  reviewCount?: number;
+  instagram?: string;
+  facebook?: string;
 }
+
+// ── Apify Google Maps real data ──────────────────────────────────────────────
+
+interface ApifyPlace {
+  title?: string;
+  name?: string;
+  website?: string;
+  phone?: string;
+  phoneUnformatted?: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  categoryName?: string;
+  categories?: string[];
+  totalScore?: number;
+  reviewsCount?: number;
+  url?: string;                    // Google Maps URL
+  permanentlyClosed?: boolean;
+  temporarilyClosed?: boolean;
+  instagram?: string;
+  facebook?: string;
+  description?: string;
+}
+
+export async function findRealLeadsApify(
+  niche: string,
+  location: string,
+  count: number = 10
+): Promise<LeadInput[]> {
+  const apiKey = process.env.APIFY_API_KEY;
+  if (!apiKey) throw new Error("APIFY_API_KEY not set");
+
+  const searchQuery = `${niche} in ${location}`;
+
+  const res = await fetch(
+    `https://api.apify.com/v2/acts/compass~crawler-google-places/run-sync-get-dataset-items?token=${apiKey}&timeout=120`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        searchStringsArray: [searchQuery],
+        maxCrawledPlacesPerSearch: count,
+        language: "en",
+        maxImages: 0,
+        maxReviews: 0,
+        scrapeDirectories: false,
+        deeperCityScrape: false,
+        exportPlaceUrls: false,
+        additionalInfo: false,
+        scrapeContacts: true,    // get email/social if available
+      }),
+      signal: AbortSignal.timeout(130_000),
+    }
+  );
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Apify error ${res.status}: ${err.slice(0, 200)}`);
+  }
+
+  const items: ApifyPlace[] = await res.json();
+
+  return items
+    .filter((p) => !p.permanentlyClosed && !p.temporarilyClosed)
+    .map((p) => ({
+      businessName: p.title ?? p.name ?? "Unknown",
+      website: p.website,
+      phone: p.phone ?? p.phoneUnformatted,
+      industry: p.categoryName ?? (p.categories?.[0]) ?? niche,
+      location: p.city ?? p.state ?? location,
+      address: p.address,
+      notes: p.description ? p.description.slice(0, 300) : undefined,
+      mapUrl: p.url,
+      gmb: p.url,
+      rating: p.totalScore,
+      reviewCount: p.reviewsCount,
+      instagram: p.instagram,
+      facebook: p.facebook,
+    }));
+}
+
+// ── Score lead with Claude ────────────────────────────────────────────────────
 
 export async function scoreLead(lead: LeadInput): Promise<number> {
-  const prompt = `
-Score this business lead for a full-service digital marketing agency (0-100).
-Higher score = better prospect.
+  let score = 30; // base
 
-Business: ${lead.businessName}
-Website: ${lead.website ?? "none"}
-Email available: ${lead.email ? "yes" : "no"}
-Industry: ${lead.industry ?? "unknown"}
-Location: ${lead.location ?? "unknown"}
-Notes: ${lead.notes ?? "none"}
+  if (lead.email)       score += 20;
+  if (lead.phone)       score += 10;
+  if (lead.website)     score += 10;
+  if (!lead.website)    score += 15; // no website = big opportunity
+  if (lead.mapUrl)      score += 5;
+  if (lead.rating && lead.rating < 4.0) score += 10; // bad reviews = needs help
+  if (lead.reviewCount && lead.reviewCount < 20) score += 10; // low visibility
 
-Scoring criteria:
-- Has email contact: +20 pts
-- Has a website (can be improved): +15 pts
-- Is in a high-value industry (restaurant, real estate, e-commerce, clinic, salon, gym, law): +20 pts
-- Local business (more likely to need local marketing): +10 pts
-- Notes suggest pain points: +15 pts
-- No website at all (big opportunity): +20 pts
+  // Industry bonus
+  const highValue = ["restaurant", "clinic", "gym", "salon", "hotel", "real estate", "dental", "spa", "boutique"];
+  if (lead.industry && highValue.some((h) => lead.industry!.toLowerCase().includes(h))) score += 10;
 
-Respond with ONLY a number between 0 and 100.`;
-
-  const result = await askClaude(prompt);
-  const score = parseInt(result.trim(), 10);
-  return isNaN(score) ? 50 : Math.min(100, Math.max(0, score));
+  return Math.min(100, score);
 }
+
+// ── Save lead to DB ───────────────────────────────────────────────────────────
+
+export async function saveLead(input: LeadInput) {
+  const score = await scoreLead(input);
+  return prisma.lead.create({
+    data: {
+      businessName: input.businessName,
+      website: input.website,
+      email: input.email,
+      phone: input.phone,
+      whatsapp: input.whatsapp,
+      industry: input.industry,
+      location: input.location,
+      address: input.address,
+      notes: input.notes,
+      gmb: input.gmb,
+      mapUrl: input.mapUrl,
+      rating: input.rating,
+      reviewCount: input.reviewCount,
+      instagram: input.instagram,
+      facebook: input.facebook,
+      score,
+    },
+  });
+}
+
+// ── AI fallback generator (when no API) ──────────────────────────────────────
 
 export async function generateLeadsFromNiche(
   niche: string,
@@ -44,21 +153,21 @@ export async function generateLeadsFromNiche(
   count: number = 10
 ): Promise<LeadInput[]> {
   const prompt = `
-Generate ${count} realistic potential client leads for a digital marketing agency.
+Generate ${count} fictional but realistic-sounding local business leads for a digital marketing agency.
 Target niche: ${niche}
-Target location: ${location}
+Target location: ${location}, India
 
-For each lead provide:
-- businessName: realistic local business name
-- industry: the specific industry
-- location: city/area
-- notes: 1-2 sentences about their likely marketing pain points
+For each, provide:
+- businessName: a realistic Indian local business name
+- industry: specific sub-category
+- location: neighborhood/area in ${location}
+- address: plausible street address
+- notes: 1-2 sentences on their likely marketing pain points
 
-Respond ONLY with valid JSON array of objects with keys: businessName, industry, location, notes
-No extra text, just the JSON array.`;
+Respond ONLY with a valid JSON array. No extra text.
+Keys: businessName, industry, location, address, notes`;
 
   const result = await askClaude(prompt);
-
   try {
     const cleaned = result.replace(/```json|```/g, "").trim();
     return JSON.parse(cleaned) as LeadInput[];
@@ -67,32 +176,26 @@ No extra text, just the JSON array.`;
   }
 }
 
-export async function saveLead(input: LeadInput) {
-  const score = await scoreLead(input);
-  return prisma.lead.create({
-    data: { ...input, score },
-  });
-}
+// ── Lead insights ─────────────────────────────────────────────────────────────
 
 export async function getLeadInsights(leadId: string): Promise<string> {
   const lead = await prisma.lead.findUnique({
     where: { id: leadId },
     include: { outreachLogs: true, followUps: true },
   });
-
   if (!lead) return "Lead not found.";
 
   const prompt = `
-Analyze this lead and provide actionable insights for the sales team.
+Analyze this lead for a digital marketing agency sales team.
 
 Business: ${lead.businessName}
 Industry: ${lead.industry ?? "unknown"}
 Location: ${lead.location ?? "unknown"}
+Rating: ${lead.rating ? `${lead.rating}/5 (${lead.reviewCount} reviews)` : "unknown"}
+Website: ${lead.website ?? "NONE"}
 Status: ${lead.status}
 Score: ${lead.score}/100
-Notes: ${lead.notes ?? "none"}
 Outreach attempts: ${lead.outreachLogs.length}
-Follow-ups scheduled: ${lead.followUps.length}
 
 Provide:
 1. Why this is a good/bad prospect
