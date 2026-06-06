@@ -56,7 +56,7 @@ export async function findRealLeadsApify(
   const fetchCount = Math.ceil(count * 1.5) + 5;
 
   const res = await fetch(
-    `https://api.apify.com/v2/acts/compass~crawler-google-places/run-sync-get-dataset-items?token=${apiKey}&timeout=120`,
+    `https://api.apify.com/v2/acts/compass~crawler-google-places/run-sync-get-dataset-items?token=${apiKey}&timeout=300`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -70,9 +70,9 @@ export async function findRealLeadsApify(
         deeperCityScrape: false,
         exportPlaceUrls: false,
         additionalInfo: false,
-        scrapeContacts: true,
+        scrapeContacts: false,
       }),
-      signal: AbortSignal.timeout(130_000),
+      signal: AbortSignal.timeout(330_000),
     }
   );
 

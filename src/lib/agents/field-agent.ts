@@ -47,9 +47,9 @@ async function searchBusiness(name: string, location: string) {
           language: "en",
           maxImages: 0,
           maxReviews: 0,
-          scrapeContacts: true,
+          scrapeContacts: false,
         }),
-        signal: AbortSignal.timeout(100_000),
+        signal: AbortSignal.timeout(330_000),
       }
     );
     if (!res.ok) return null;
