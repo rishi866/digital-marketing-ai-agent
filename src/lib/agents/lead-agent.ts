@@ -52,6 +52,9 @@ export async function findRealLeadsApify(
 
   const searchQuery = `${niche} in ${location}`;
 
+  // Request extra to account for filtered/closed places
+  const fetchCount = Math.ceil(count * 1.5) + 5;
+
   const res = await fetch(
     `https://api.apify.com/v2/acts/compass~crawler-google-places/run-sync-get-dataset-items?token=${apiKey}&timeout=120`,
     {
@@ -59,7 +62,7 @@ export async function findRealLeadsApify(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         searchStringsArray: [searchQuery],
-        maxCrawledPlacesPerSearch: count,
+        maxCrawledPlacesPerSearch: fetchCount,
         language: "en",
         maxImages: 0,
         maxReviews: 0,
@@ -67,7 +70,7 @@ export async function findRealLeadsApify(
         deeperCityScrape: false,
         exportPlaceUrls: false,
         additionalInfo: false,
-        scrapeContacts: true,    // get email/social if available
+        scrapeContacts: true,
       }),
       signal: AbortSignal.timeout(130_000),
     }
@@ -82,6 +85,7 @@ export async function findRealLeadsApify(
 
   return items
     .filter((p) => !p.permanentlyClosed && !p.temporarilyClosed)
+    .slice(0, count)   // trim to exactly what was requested
     .map((p) => ({
       businessName: p.title ?? p.name ?? "Unknown",
       website: p.website,

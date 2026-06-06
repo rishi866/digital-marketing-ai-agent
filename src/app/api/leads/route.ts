@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
   const [leads, total] = await Promise.all([
     prisma.lead.findMany({
       where,
-      orderBy: { score: "desc" },
+      orderBy: { createdAt: "desc" },
       skip: (page - 1) * limit,
       take: limit,
       include: { _count: { select: { outreachLogs: true, followUps: true } } },

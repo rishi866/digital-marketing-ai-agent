@@ -322,6 +322,8 @@ export default function LeadsPage() {
   const [location, setLocation] = useState("Mumbai");
   const [count, setCount] = useState(10);
   const [showAdd, setShowAdd] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [filterStatus, setFilterStatus] = useState("all");
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [researchingId, setResearchingId] = useState<string | null>(null);
@@ -419,7 +421,10 @@ export default function LeadsPage() {
           <h2 className="text-2xl font-bold text-slate-900">Lead Finder</h2>
           <p className="text-slate-500 mt-1">Click any lead to see full profile, social media & weakness analysis</p>
         </div>
-        <button onClick={() => setShowAdd(!showAdd)} className="btn-primary">+ Add Lead</button>
+        <div className="flex gap-2">
+          <button onClick={() => setShowImport(!showImport)} className="btn-secondary">⬆ Import CSV</button>
+          <button onClick={() => setShowAdd(!showAdd)} className="btn-primary">+ Add Lead</button>
+        </div>
       </div>
 
       {/* AI Generator */}
@@ -453,6 +458,34 @@ export default function LeadsPage() {
           {generating ? "Fetching from Google Maps... (30-90 sec)" : "Find Real Businesses"}
         </button>
       </div>
+
+      {/* CSV Import */}
+      {showImport && (
+        <div className="card mb-6 border-green-200">
+          <h3 className="font-semibold text-slate-800 mb-2">Import Leads from CSV</h3>
+          <p className="text-xs text-slate-400 mb-3">CSV columns: businessName, website, email, phone, industry, location, address, notes (header row required)</p>
+          <input type="file" accept=".csv" className="input mb-3" onChange={async (e) => {
+            const file = e.target.files?.[0]; if (!file) return;
+            setImporting(true);
+            const text = await file.text();
+            const lines = text.trim().split("\n");
+            const headers = lines[0].split(",").map(h => h.trim().replace(/"/g, ""));
+            const rows = lines.slice(1).map(line => {
+              const vals = line.split(",").map(v => v.trim().replace(/"/g, ""));
+              return Object.fromEntries(headers.map((h, i) => [h, vals[i] ?? ""]));
+            });
+            await Promise.all(rows.filter(r => r.businessName).map(row =>
+              fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(row) })
+            ));
+            await fetchLeads();
+            setShowImport(false);
+            setImporting(false);
+            alert(`Imported ${rows.length} leads!`);
+          }} />
+          {importing && <p className="text-sm text-blue-600">Importing and scoring leads...</p>}
+          <button onClick={() => setShowImport(false)} className="btn-secondary text-sm">Cancel</button>
+        </div>
+      )}
 
       {/* Manual Add */}
       {showAdd && (

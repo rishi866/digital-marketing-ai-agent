@@ -20,26 +20,23 @@ model Lead {
   status         String    @default("new")
   score          Int       @default(0)
 
-  // Social media profiles
   instagram      String?
   facebook       String?
   linkedin       String?
   youtube        String?
   twitter        String?
-  gmb            String?   // Google My Business URL
+  gmb            String?
 
-  // From Google Maps (Apify)
   address        String?
   rating         Float?
   reviewCount    Int?
-  mapUrl         String?   // Google Maps link
+  mapUrl         String?
 
-  // AI Research results
-  websiteScore   Int?      // 0-100
-  socialScore    Int?      // 0-100
-  gaps           String?   // JSON array of gaps found
-  weaknesses     String?   // Claude's weakness analysis
-  outreachAngle  String?   // Recommended cold email angle
+  websiteScore   Int?
+  socialScore    Int?
+  gaps           String?
+  weaknesses     String?
+  outreachAngle  String?
   lastResearched DateTime?
 
   createdAt    DateTime @default(now())
@@ -47,52 +44,92 @@ model Lead {
 
   outreachLogs OutreachLog[]
   followUps    FollowUp[]
+  proposals    Proposal[]
+  bulkEmails   BulkEmail[]
 }
 
 model OutreachLog {
   id        String   @id @default(cuid())
   leadId    String
-  lead      Lead     @relation(fields: [leadId], references: [id])
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
   subject   String
   body      String
-  channel   String   @default("email") // email, linkedin, whatsapp
+  channel   String   @default("email")
   sentAt    DateTime @default(now())
   opened    Boolean  @default(false)
   replied   Boolean  @default(false)
 }
 
 model FollowUp {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   leadId      String
-  lead        Lead     @relation(fields: [leadId], references: [id])
+  lead        Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
   message     String
   scheduledAt DateTime
   sentAt      DateTime?
-  status      String   @default("pending") // pending, sent, skipped
-  createdAt   DateTime @default(now())
+  status      String    @default("pending")
+  createdAt   DateTime  @default(now())
 }
 
-model Content {
-  id          String   @id @default(cuid())
-  type        String   // social_post, blog, ad_copy, email_template, proposal
-  platform    String?  // instagram, facebook, linkedin, google
-  title       String?
-  body        String
-  tags        String?
-  industry    String?
-  createdAt   DateTime @default(now())
+model Proposal {
+  id           String   @id @default(cuid())
+  leadId       String
+  lead         Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  title        String
+  services     String   // JSON array of selected services
+  body         String   // full proposal markdown
+  pricingTier  String   @default("standard")
+  status       String   @default("draft") // draft, sent, accepted, rejected
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model CaseStudy {
+  id           String   @id @default(cuid())
+  clientType   String   // e.g. "Restaurant in Mumbai"
+  service      String   // e.g. "Instagram Management"
+  result       String   // e.g. "800 followers in 60 days"
+  duration     String?  // e.g. "3 months"
+  details      String?  // longer description
+  createdAt    DateTime @default(now())
 }
 
 model Campaign {
-  id          String   @id @default(cuid())
+  id          String      @id @default(cuid())
   name        String
-  status      String   @default("draft") // draft, active, paused, completed
+  status      String      @default("draft")
   targetNiche String?
   targetCity  String?
-  totalLeads  Int      @default(0)
-  contacted   Int      @default(0)
-  replied     Int      @default(0)
-  converted   Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  totalLeads  Int         @default(0)
+  contacted   Int         @default(0)
+  replied     Int         @default(0)
+  converted   Int         @default(0)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  bulkEmails  BulkEmail[]
+}
+
+model BulkEmail {
+  id         String    @id @default(cuid())
+  campaignId String?
+  campaign   Campaign? @relation(fields: [campaignId], references: [id])
+  leadId     String
+  lead       Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  subject    String
+  body       String
+  status     String    @default("pending") // pending, approved, sent, failed
+  sentAt     DateTime?
+  createdAt  DateTime  @default(now())
+}
+
+model Content {
+  id        String   @id @default(cuid())
+  type      String
+  platform  String?
+  title     String?
+  body      String
+  tags      String?
+  industry  String?
+  createdAt DateTime @default(now())
 }
