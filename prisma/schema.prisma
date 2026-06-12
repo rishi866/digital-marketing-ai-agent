@@ -41,6 +41,15 @@ model Lead {
   outreachAngle  String?
   lastResearched DateTime?
 
+  // CRM fields
+  tags             String?   // JSON array of tags
+  source           String?   @default("manual")
+  priority         String    @default("medium")
+  dealValue        Int?      @default(0)
+  owner            String?
+  lastContactedAt  DateTime?
+  nextFollowUpAt   DateTime?
+
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -48,6 +57,31 @@ model Lead {
   followUps    FollowUp[]
   proposals    Proposal[]
   bulkEmails   BulkEmail[]
+  activities   Activity[]
+  tasks        Task[]
+}
+
+model Activity {
+  id        String   @id @default(cuid())
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  type      String   // note | call | email | meeting | sms | whatsapp | status_change
+  title     String
+  body      String?
+  createdAt DateTime @default(now())
+  createdBy String?
+}
+
+model Task {
+  id          String    @id @default(cuid())
+  leadId      String
+  lead        Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  dueAt       DateTime?
+  completedAt DateTime?
+  priority    String    @default("medium")
+  createdAt   DateTime  @default(now())
 }
 
 model OutreachLog {

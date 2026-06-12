@@ -7,6 +7,7 @@ const nav = [
   { href: "/field",      label: "Field Intel",  icon: "⚡" },
   { href: "/leads",      label: "Lead Finder",  icon: "🎯" },
   { href: "/pipeline",   label: "Pipeline",     icon: "📋" },
+  { href: "/crm",        label: "CRM",          icon: "📇" },
   { href: "/tools",      label: "AI Tools",     icon: "🤖" },
   { href: "/outreach",   label: "Cold Outreach",icon: "📧" },
   { href: "/campaigns",  label: "Campaigns",    icon: "📣" },

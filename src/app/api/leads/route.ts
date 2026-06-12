@@ -55,6 +55,15 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   const body = await req.json();
   const { id, ...data } = body;
+  // tags accepted as array -> serialize to JSON string for storage
+  if (Array.isArray(data.tags)) {
+    data.tags = JSON.stringify(data.tags.map((t: unknown) => String(t).trim()).filter(Boolean));
+  }
+  if (data.nextFollowUpAt) data.nextFollowUpAt = new Date(data.nextFollowUpAt);
+  if (data.lastContactedAt) data.lastContactedAt = new Date(data.lastContactedAt);
+  if (data.dealValue !== undefined && data.dealValue !== null && data.dealValue !== "") {
+    data.dealValue = Math.max(0, Number(data.dealValue) || 0);
+  }
   const lead = await prisma.lead.update({ where: { id }, data });
   return NextResponse.json(lead);
 }
