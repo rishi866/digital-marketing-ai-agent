@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useToast, useToastAction } from "@/components/Toast";
 
 interface Lead {
   id: string;
@@ -56,10 +57,16 @@ const priorityColor: Record<string, string> = {
 };
 
 const STATUSES = ["all", "new", "contacted", "replied", "meeting", "proposal_sent", "converted", "dead"];
+const NON_ALL_STATUSES = STATUSES.filter(s => s !== "all");
 const SOURCES = ["", "manual", "csv", "ai", "google_maps", "referral", "social", "website", "other"];
 const PRIORITIES = ["", "low", "medium", "high"];
 
+type SmartPreset = "hot" | "today" | "stale" | "high_value" | "no_owner";
+
 export default function CrmPage() {
+  const toast = useToast();
+  const toastAction = useToastAction();
+
   const [leads, setLeads] = useState<Lead[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -75,6 +82,12 @@ export default function CrmPage() {
   const [dateTo, setDateTo] = useState("");
   const [idFrom, setIdFrom] = useState("");
   const [idTo, setIdTo] = useState("");
+  const [preset, setPreset] = useState<SmartPreset | "">("");
+
+  // Bulk select
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkAction, setBulkAction] = useState<string>("");
+  const [bulkValue, setBulkValue] = useState<string>("");
 
   const fetchAll = async () => {
     setLoading(true);
@@ -87,12 +100,13 @@ export default function CrmPage() {
     ]);
     setLeads(leadsRes.leads ?? []);
     setStats(statsRes);
+    setSelected(new Set());
     setLoading(false);
   };
 
-  useEffect(() => { fetchAll(); }, [status]);
+  useEffect(() => { fetchAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [status]);
 
-  // Apply client-side filters that the /api/leads endpoint doesn't support
+  // Apply client-side filters
   const filtered = useMemo(() => {
     let list = [...leads];
     if (segment === "new") list = list.filter(l => l.status === "new");
@@ -118,6 +132,19 @@ export default function CrmPage() {
       const d = new Date(dateTo).getTime() + 24 * 60 * 60 * 1000 - 1;
       list = list.filter(l => new Date(l.createdAt).getTime() <= d);
     }
+    // Smart presets (applied AFTER other filters)
+    if (preset === "hot") list = list.filter(l => l.status === "replied" || l.status === "meeting");
+    if (preset === "today") {
+      const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999);
+      list = list.filter(l => l.nextFollowUpAt && new Date(l.nextFollowUpAt) <= todayEnd);
+    }
+    if (preset === "stale") {
+      const fourteenDaysAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
+      list = list.filter(l => !["converted", "dead"].includes(l.status) && (!l.lastContactedAt || new Date(l.lastContactedAt).getTime() < fourteenDaysAgo));
+    }
+    if (preset === "high_value") list = list.filter(l => (l.dealValue ?? 0) >= 50000);
+    if (preset === "no_owner") list = list.filter(l => !l.owner);
+
     // sort by createdAt ASC to give a stable "Lead #"
     list.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
@@ -129,7 +156,7 @@ export default function CrmPage() {
       if (span > 0) list = list.slice(0, span);
     }
     return list;
-  }, [leads, segment, source, priority, tag, q, dateFrom, dateTo, idFrom, idTo]);
+  }, [leads, segment, source, priority, tag, q, dateFrom, dateTo, idFrom, idTo, preset]);
 
   const exportUrl = useMemo(() => {
     const p = new URLSearchParams();
@@ -148,10 +175,77 @@ export default function CrmPage() {
 
   const clearFilters = () => {
     setSegment(""); setStatus("all"); setSource(""); setPriority("");
-    setTag(""); setQ(""); setDateFrom(""); setDateTo(""); setIdFrom(""); setIdTo("");
+    setTag(""); setQ(""); setDateFrom(""); setDateTo(""); setIdFrom(""); setIdTo(""); setPreset("");
   };
 
   const startIdx = Number(idFrom) > 0 ? Number(idFrom) - 1 : 0;
+
+  // Bulk selection helpers
+  const allOnPageSelected = filtered.length > 0 && filtered.every(l => selected.has(l.id));
+  const toggleAll = () => {
+    if (allOnPageSelected) {
+      const next = new Set(selected);
+      filtered.forEach(l => next.delete(l.id));
+      setSelected(next);
+    } else {
+      const next = new Set(selected);
+      filtered.forEach(l => next.add(l.id));
+      setSelected(next);
+    }
+  };
+  const toggleOne = (id: string) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setSelected(next);
+  };
+
+  const runBulk = async () => {
+    if (selected.size === 0 || !bulkAction) return;
+    const ids = Array.from(selected);
+    let payload: { ids: string[]; action: string; value?: string | number | string[] | null } = { ids, action: bulkAction };
+
+    if (bulkAction === "setStatus" || bulkAction === "setPriority" || bulkAction === "setSource") {
+      if (!bulkValue) { toast.error("Select a value first"); return; }
+      payload.value = bulkValue;
+    } else if (bulkAction === "setOwner") {
+      payload.value = bulkValue || null;
+    } else if (bulkAction === "addTags" || bulkAction === "removeTags") {
+      const tags = bulkValue.split(",").map(s => s.trim()).filter(Boolean);
+      if (tags.length === 0) { toast.error("Type at least one tag"); return; }
+      payload.value = tags;
+    } else if (bulkAction === "setDealValue") {
+      payload.value = Number(bulkValue) || 0;
+    } else if (bulkAction === "setFollowUp") {
+      payload.value = bulkValue || null;
+    } else if (bulkAction === "delete") {
+      if (!confirm(`Delete ${ids.length} lead${ids.length > 1 ? "s" : ""}? This cannot be undone.`)) return;
+    } else if (bulkAction === "exportSelected") {
+      // Build CSV from already-fetched data, client-side
+      const rows = filtered.filter(l => selected.has(l.id));
+      downloadSelectedCsv(rows, startIdx);
+      toast.success(`Exported ${rows.length} leads`);
+      return;
+    }
+
+    await toastAction(
+      async () => {
+        const res = await fetch("/api/crm/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error(`Bulk action failed (${res.status})`);
+        return res.json();
+      },
+      {
+        loading: `Updating ${ids.length} leads…`,
+        success: `Done — ${ids.length} lead${ids.length > 1 ? "s" : ""} updated`,
+        error: "Bulk action failed",
+      },
+    );
+    setBulkAction(""); setBulkValue("");
+    await fetchAll();
+  };
 
   return (
     <div className="p-8">
@@ -160,18 +254,21 @@ export default function CrmPage() {
           <h2 className="text-2xl font-bold text-slate-900">CRM</h2>
           <p className="text-slate-500 mt-1">Manage leads, log activities, track tasks & download sheets</p>
         </div>
-        <a href={exportUrl} className="btn-primary">⬇ Download Sheet (CSV)</a>
+        <div className="flex gap-2">
+          <Link href="/crm/board" className="btn-secondary">🗂 Board view</Link>
+          <a href={exportUrl} className="btn-primary">⬇ Download Sheet (CSV)</a>
+        </div>
       </div>
 
       {/* Stats cards */}
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
         {[
-          { label: "Total Leads", value: stats?.total ?? 0, icon: "📇", color: "blue" },
-          { label: "New Leads", value: stats?.newLeads ?? 0, icon: "🆕", color: "slate" },
-          { label: "Old / Active", value: stats?.oldLeads ?? 0, icon: "🔄", color: "indigo" },
-          { label: "New (7 days)", value: stats?.newThisWeek ?? 0, icon: "✨", color: "emerald" },
-          { label: "Open Tasks", value: stats?.openTasks ?? 0, icon: "✅", color: "amber" },
-          { label: "Overdue", value: stats?.overdueTasks ?? 0, icon: "⚠️", color: "red" },
+          { label: "Total Leads", value: stats?.total ?? 0, icon: "📇" },
+          { label: "New Leads", value: stats?.newLeads ?? 0, icon: "🆕" },
+          { label: "Old / Active", value: stats?.oldLeads ?? 0, icon: "🔄" },
+          { label: "New (7 days)", value: stats?.newThisWeek ?? 0, icon: "✨" },
+          { label: "Open Tasks", value: stats?.openTasks ?? 0, icon: "✅" },
+          { label: "Overdue", value: stats?.overdueTasks ?? 0, icon: "⚠️" },
         ].map(c => (
           <div key={c.label} className="card !p-4">
             <div className="text-xl mb-1">{c.icon}</div>
@@ -181,7 +278,31 @@ export default function CrmPage() {
         ))}
       </div>
 
-      {/* Pipeline value + upcoming */}
+      {/* Smart presets */}
+      <div className="card mb-4 !p-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs text-slate-500 font-medium uppercase tracking-wide">Quick view</span>
+          {[
+            { key: "hot", label: "🔥 Hot leads", desc: "Replied or in meeting" },
+            { key: "today", label: "⏰ Due today", desc: "Follow-up scheduled today" },
+            { key: "stale", label: "💤 Stale", desc: "No activity 14d+" },
+            { key: "high_value", label: "💰 ₹50k+ deals", desc: "Deal value ≥ ₹50,000" },
+            { key: "no_owner", label: "🧷 Unassigned", desc: "No owner set" },
+          ].map(p => (
+            <button key={p.key} onClick={() => setPreset(preset === p.key ? "" : p.key as SmartPreset)} title={p.desc}
+              className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                preset === p.key ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+              }`}>
+              {p.label}
+            </button>
+          ))}
+          {preset && (
+            <button onClick={() => setPreset("")} className="text-xs text-slate-400 hover:text-slate-700 ml-1">clear preset</button>
+          )}
+        </div>
+      </div>
+
+      {/* Pipeline value + status breakdown */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <div className="card !p-4 bg-gradient-to-br from-green-50 to-emerald-50 border-green-100">
           <div className="text-xs text-green-700 font-medium uppercase tracking-wide">Won Pipeline Value</div>
@@ -275,6 +396,59 @@ export default function CrmPage() {
         </div>
       </div>
 
+      {/* Bulk action toolbar (visible when something is selected) */}
+      {selected.size > 0 && (
+        <div className="card mb-4 !p-3 bg-indigo-50 border-indigo-200 flex flex-wrap items-center gap-2">
+          <span className="text-sm font-medium text-indigo-900">{selected.size} selected</span>
+          <button onClick={() => setSelected(new Set())} className="text-xs text-indigo-600 hover:text-indigo-800">clear</button>
+          <div className="flex-1" />
+          <select className="input !py-1.5 !w-auto text-sm" value={bulkAction} onChange={e => { setBulkAction(e.target.value); setBulkValue(""); }}>
+            <option value="">Choose action…</option>
+            <option value="setStatus">Change status</option>
+            <option value="setPriority">Change priority</option>
+            <option value="setSource">Change source</option>
+            <option value="setOwner">Set owner</option>
+            <option value="addTags">Add tags</option>
+            <option value="removeTags">Remove tags</option>
+            <option value="setDealValue">Set deal value</option>
+            <option value="setFollowUp">Set follow-up date</option>
+            <option value="exportSelected">Export selected to CSV</option>
+            <option value="delete">Delete</option>
+          </select>
+          {(bulkAction === "setStatus") && (
+            <select className="input !py-1.5 !w-auto text-sm" value={bulkValue} onChange={e => setBulkValue(e.target.value)}>
+              <option value="">value…</option>
+              {NON_ALL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          )}
+          {(bulkAction === "setPriority") && (
+            <select className="input !py-1.5 !w-auto text-sm" value={bulkValue} onChange={e => setBulkValue(e.target.value)}>
+              <option value="">value…</option>
+              {PRIORITIES.filter(Boolean).map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+          )}
+          {(bulkAction === "setSource") && (
+            <select className="input !py-1.5 !w-auto text-sm" value={bulkValue} onChange={e => setBulkValue(e.target.value)}>
+              <option value="">value…</option>
+              {SOURCES.filter(Boolean).map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          )}
+          {(bulkAction === "setOwner") && (
+            <input className="input !py-1.5 !w-40 text-sm" placeholder="email or name" value={bulkValue} onChange={e => setBulkValue(e.target.value)} />
+          )}
+          {(bulkAction === "addTags" || bulkAction === "removeTags") && (
+            <input className="input !py-1.5 !w-48 text-sm" placeholder="tag1, tag2" value={bulkValue} onChange={e => setBulkValue(e.target.value)} />
+          )}
+          {(bulkAction === "setDealValue") && (
+            <input className="input !py-1.5 !w-32 text-sm" type="number" placeholder="₹" value={bulkValue} onChange={e => setBulkValue(e.target.value)} />
+          )}
+          {(bulkAction === "setFollowUp") && (
+            <input className="input !py-1.5 !w-auto text-sm" type="date" value={bulkValue} onChange={e => setBulkValue(e.target.value)} />
+          )}
+          <button onClick={runBulk} disabled={!bulkAction} className="btn-primary text-sm !py-1.5">Apply</button>
+        </div>
+      )}
+
       {/* Lead table */}
       <div className="card p-0 overflow-hidden">
         {loading ? (
@@ -286,6 +460,9 @@ export default function CrmPage() {
             <table className="w-full text-sm">
               <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
                 <tr>
+                  <th className="px-3 py-2.5 w-8">
+                    <input type="checkbox" checked={allOnPageSelected} onChange={toggleAll} className="w-4 h-4" />
+                  </th>
                   {["#", "Business", "Industry / Location", "Contact", "Status", "Priority", "Score", "Deal", "Tags", "Last Contact", "Next F/U", ""].map(h => (
                     <th key={h} className="text-left px-3 py-2.5 font-medium text-slate-600 text-xs">{h}</th>
                   ))}
@@ -295,8 +472,13 @@ export default function CrmPage() {
                 {filtered.map((l, i) => {
                   let tags: string[] = [];
                   try { tags = JSON.parse(l.tags ?? "[]"); } catch { /* ignore */ }
+                  const isSelected = selected.has(l.id);
+                  const overdue = l.nextFollowUpAt && new Date(l.nextFollowUpAt).getTime() < Date.now();
                   return (
-                    <tr key={l.id} className="hover:bg-slate-50">
+                    <tr key={l.id} className={`hover:bg-slate-50 ${isSelected ? "bg-indigo-50/40" : ""}`}>
+                      <td className="px-3 py-2.5">
+                        <input type="checkbox" checked={isSelected} onChange={() => toggleOne(l.id)} className="w-4 h-4" />
+                      </td>
                       <td className="px-3 py-2.5 text-slate-400 text-xs font-mono">{startIdx + i + 1}</td>
                       <td className="px-3 py-2.5">
                         <Link href={`/crm/${l.id}`} className="font-medium text-slate-800 hover:text-blue-600">
@@ -309,8 +491,12 @@ export default function CrmPage() {
                         <div className="text-slate-400">{l.location ?? "—"}</div>
                       </td>
                       <td className="px-3 py-2.5 text-xs">
-                        <div className={l.email ? "text-green-600" : "text-slate-300"}>{l.email ? "📧" : "—"} {l.email ?? ""}</div>
-                        <div className={l.phone ? "text-green-600" : "text-slate-300"}>{l.phone ? "📞" : "—"} {l.phone ?? ""}</div>
+                        <div className="flex gap-1.5 items-center">
+                          {l.email && <a href={`mailto:${l.email}`} title={l.email} className="hover:opacity-70">📧</a>}
+                          {l.phone && <a href={`tel:${l.phone}`} title={l.phone} className="hover:opacity-70">📞</a>}
+                          {l.whatsapp && <a href={l.whatsapp} target="_blank" rel="noopener noreferrer" title="WhatsApp" className="hover:opacity-70">💬</a>}
+                          {!l.email && !l.phone && !l.whatsapp && <span className="text-slate-300">—</span>}
+                        </div>
                       </td>
                       <td className="px-3 py-2.5">
                         <span className={`badge ${statusColor[l.status] ?? "bg-slate-100"}`}>{l.status}</span>
@@ -340,7 +526,7 @@ export default function CrmPage() {
                       <td className="px-3 py-2.5 text-xs text-slate-500">
                         {l.lastContactedAt ? new Date(l.lastContactedAt).toLocaleDateString() : "—"}
                       </td>
-                      <td className="px-3 py-2.5 text-xs text-slate-500">
+                      <td className={`px-3 py-2.5 text-xs ${overdue ? "text-red-500 font-semibold" : "text-slate-500"}`}>
                         {l.nextFollowUpAt ? new Date(l.nextFollowUpAt).toLocaleDateString() : "—"}
                       </td>
                       <td className="px-3 py-2.5">
@@ -379,4 +565,40 @@ export default function CrmPage() {
       )}
     </div>
   );
+}
+
+function downloadSelectedCsv(rows: Lead[], startIdx: number) {
+  const headers = [
+    "Lead #", "Business Name", "Industry", "Location", "Email", "Phone", "WhatsApp",
+    "Status", "Source", "Priority", "Score", "Deal Value", "Owner", "Tags",
+    "Last Contacted", "Next Follow-up", "Created At",
+  ];
+  const csvEscape = (v: unknown) => {
+    if (v === null || v === undefined) return "";
+    const s = String(v);
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const fmt = (d?: string) => d ? new Date(d).toISOString().slice(0, 19).replace("T", " ") : "";
+  const sorted = [...rows].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const lines = sorted.map((l, i) => {
+    let tags = "";
+    try { tags = (JSON.parse(l.tags ?? "[]") as string[]).join(", "); } catch { tags = l.tags ?? ""; }
+    return [
+      startIdx + i + 1, l.businessName, l.industry ?? "", l.location ?? "",
+      l.email ?? "", l.phone ?? "", l.whatsapp ?? "",
+      l.status, l.source ?? "", l.priority ?? "", l.score,
+      l.dealValue ?? 0, l.owner ?? "", tags,
+      fmt(l.lastContactedAt), fmt(l.nextFollowUpAt), fmt(l.createdAt),
+    ].map(csvEscape).join(",");
+  });
+  const csv = "﻿" + [headers.join(","), ...lines].join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `leads_selected_${rows.length}_${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
